@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { db } from '../../lib/firebase';
 import { collection, getDocs, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
@@ -29,7 +29,7 @@ const TAB_MENU = [
   { id: 'cancel', label: '취소', activeBg: 'bg-gray-600' },
 ];
 
-export default function ArchivePage() {
+function ArchiveContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   
@@ -325,9 +325,7 @@ export default function ArchivePage() {
     <main className="min-h-screen bg-stone-50 pb-12 pt-[140px] relative">
       
       <header className="fixed top-0 left-0 w-full z-30 pointer-events-none">
-        {/* 💡 [핵심] pb-4를 주어 둥근 모서리와 탭 메뉴 간의 상하 간격을 확보합니다. */}
         <div className="bg-white/95 backdrop-blur-md shadow-sm rounded-b-[24px] overflow-hidden pointer-events-auto pb-4">
-          
           <div className="pt-14 px-5 flex items-center justify-between pb-3">
             <button 
               onClick={() => router.back()} 
@@ -341,7 +339,6 @@ export default function ArchivePage() {
             <div className="w-9 h-9"></div> 
           </div>
 
-          {/* 💡 [핵심] px-5를 가진 이너(Inner) 래퍼를 추가하여, 이 선을 넘어가면 깔끔하게 가려지도록(마스킹) 처리합니다. */}
           <div className="px-5">
             <div 
               className="flex gap-1.5 overflow-x-auto [&::-webkit-scrollbar]:hidden" 
@@ -365,11 +362,10 @@ export default function ArchivePage() {
               ))}
             </div>
           </div>
-          
         </div>
       </header>
 
-      <div className="h-5"></div> {/* 고정 간격이 필요한 경우 */}
+      <div className="h-5"></div>
 
       <div className="mx-6 mt-2 flex flex-col gap-4">
         {isLoading ? (
@@ -566,7 +562,7 @@ export default function ArchivePage() {
                       onClick={() => handleDeleteDraftCourse(selectedCourse.id)}
                       className="flex-[1] py-3.5 bg-red-50 text-red-600 border border-red-100 font-bold rounded-xl text-xs active:bg-red-100 transition"
                     >
-                    삭 제
+                      삭 제
                     </button>
                     <button
                       type="button"
@@ -673,7 +669,6 @@ export default function ArchivePage() {
                     </button>
                 </div>
               )}
-
             </div>
           </div>
         </div>
@@ -726,5 +721,13 @@ export default function ArchivePage() {
         </div>
       )}
     </main>
+  );
+}
+
+export default function ArchivePage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-stone-400 text-xs">로딩 중...</div>}>
+      <ArchiveContent />
+    </Suspense>
   );
 }
