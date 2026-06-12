@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
 import { db } from '@/lib/firebase';
@@ -17,7 +17,8 @@ type Place = {
   placeUrl?: string;
 };
 
-export default function WriteCoursePage() {
+// 실제 로직과 UI를 담은 컴포넌트
+function WriteCourseContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const courseId = searchParams.get('id');
@@ -31,7 +32,6 @@ export default function WriteCoursePage() {
   const lastScrollY = useRef(0);
   const searchBtnRef = useRef<HTMLDivElement>(null);
 
-  // 저장 모달 상태
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [courseName, setCourseName] = useState('');
   const [modalType, setModalType] = useState<'draft' | 'pending'>('pending'); 
@@ -41,7 +41,6 @@ export default function WriteCoursePage() {
     const handleScroll = () => {
       const currentScrollY = window.scrollY;
       const searchBtnTop = searchBtnRef.current?.getBoundingClientRect().top || 0;
-      // 버튼이 시야에서 사라졌을 때 && 위로 스크롤 할 때만 노출
       if (searchBtnTop < 0) {
         setShowBottomButton(currentScrollY < lastScrollY.current);
       } else {
@@ -195,7 +194,7 @@ export default function WriteCoursePage() {
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-6">
           <div className="w-full max-w-sm bg-white rounded-[28px] p-6 shadow-2xl flex flex-col gap-4">
             <h3 className="font-bold text-lg text-center">{modalType === 'pending' ? "코스 등록" : "임시 저장"}</h3>
-            <input type="text" value={courseName} onChange={(e) => setCourseName(e.target.value)} placeholder="데이크 코스 이름" className="w-full bg-stone-50 p-3 rounded-2xl text-sm" />
+            <input type="text" value={courseName} onChange={(e) => setCourseName(e.target.value)} placeholder="데이트 코스 이름" className="w-full bg-stone-50 p-3 rounded-2xl text-sm" />
             <div className="flex gap-3">
               <button onClick={() => setIsModalOpen(false)} className="flex-1 py-3 bg-stone-100 font-bold rounded-xl text-xs">닫 기</button>
               <button onClick={handleSaveToFirebase} disabled={isSaving} className="flex-[2] py-3 bg-orange-500 text-white font-bold rounded-xl text-xs">{isSaving ? "저장 중..." : "저장히기"}</button>
@@ -204,5 +203,14 @@ export default function WriteCoursePage() {
         </div>
       )}
     </main>
+  );
+}
+
+// 래퍼 컴포넌트 추가
+export default function WriteCoursePage() {
+  return (
+    <Suspense fallback={<main className="min-h-screen bg-stone-50" />}>
+      <WriteCourseContent />
+    </Suspense>
   );
 }
