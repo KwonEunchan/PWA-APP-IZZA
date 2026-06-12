@@ -2,181 +2,119 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { db } from '@/lib/firebase';
-import { collection, getDocs, query, where, updateDoc, doc } from 'firebase/firestore';
+import { db } from '../../lib/firebase';
+import { collection, addDoc, getDocs, query, orderBy, limit, where, deleteDoc, doc } from 'firebase/firestore';
 
-// 노트 및 장소 타입 정의
-type Note = { id: number; text: string };
-type Place = { 
-  id: number; 
-  name: string; 
-  address: string; 
-  category: string; 
-  notes: Note[]; 
-  isSpecial?: boolean;
-  placeUrl?: string; // 카카오맵 원본 URL
-};
-
-// 지난 데이트 코스 타입 정의
-type PastDateItem = {
-  id: string; 
+type SearchHistoryItem = {
+  id: string;
   title: string;
-  date: string; // YYYY.MM.DD 형식
-  location: string;
-  places: Place[]; 
-};
-
-// 특별한 기억으로 추출될 개별 장소 아이템 타입
-type SpecialMemoryItem = {
-  placeId: number;
-  courseId: string;
-  placeName: string;
-  date: string;
   address: string;
-  note: string;
-  category: string;
-  placeUrl: string;
-  embedUrl: string;
+  date: string;
+  placeUrl?: string;
+  lat?: number;
+  lng?: number;
+  category?: string;
 };
 
-// 퀵 필터 타입 선언
-type FilterType = 'all' | 'week' | 'month' | 'year' | 'custom';
+type KakaoPlaceItem = {
+  id: string;
+  place_name: string;
+  address_name: string;
+  road_address_name: string;
+  category_group_name: string;
+  category_name: string;
+  x: string;
+  y: string;
+  place_url: string;
+};
 
-export default function MemoryPage() {
+export default function SearchPlacePage() {
   const router = useRouter();
-  
-  const [activeMenu, setActiveMenu] = useState<'past' | 'special'>('past');
-  const [dateFilter, setDateFilter] = useState<FilterType>('all');
-  const [startDate, setStartDate] = useState<string>('');
-  const [endDate, setEndDate] = useState<string>('');
-  const [memories, setMemories] = useState<PastDateItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState<string>('');
+  const [keyword, setKeyword] = useState('');
+  const [searchResults, setSearchResults] = useState<KakaoPlaceItem[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [history, setHistory] = useState<SearchHistoryItem[]>([]);
 
-  // 모달 상태 관리
-  const [selectedCourse, setSelectedCourse] = useState<PastDateItem | null>(null);
-  
-  // 💡 검색 페이지와 완벽히 동일한 구조의 팝업 타겟 상태
+  const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [selectedTarget, setSelectedTarget] = useState<{
-    courseId: string;
-    placeId: number;
     title: string;
     address: string;
+    lat: string;
+    lng: string;
     embedUrl: string;
     placeUrl: string;
-    category: string;
-    isSpecial: boolean;
+    category?: string;
   } | null>(null);
 
-  // 파이어베이스 연동: 오직 완료된(completed) 코스만 로드
+  // 1. 로컬 스토리지에서 유저 정보 로드
   useEffect(() => {
-    fetchMemories();
+    const storedUser = localStorage.getItem('currentUser') || 'me';
+    setCurrentUser(storedUser);
   }, []);
 
-  const fetchMemories = async () => {
-    setIsLoading(true);
+  // 2. 유저 정보가 세팅된 후 검색 기록 로드
+  useEffect(() => {
+    if (currentUser) {
+      fetchSearchHistory();
+    }
+  }, [currentUser]);
+
+  const fetchSearchHistory = async () => {
+    if (!currentUser) return;
     try {
       const q = query(
-        collection(db, "date_courses"),
-        where("status", "==", "completed") 
+        collection(db, "search_history"),
+        where("user", "==", currentUser),
+        orderBy("clickedAt", "desc"),
+        limit(10)
       );
+      const querySnapshot = await getDocs(q);
+      const historyList: SearchHistoryItem[] = [];
       
-      const snapshot = await getDocs(q);
-      const fetchedData: PastDateItem[] = [];
-
-      snapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        let detectedLocation = "위치 미상";
-        if (data.places && data.places.length > 0) {
-          const parts = (data.places[0].address || "").split(" ");
-          detectedLocation = parts.length >= 2 ? `${parts[0]} ${parts[1]}` : parts[0];
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        let displayDate = data.searchDate || "";
+        if (displayDate.includes("-")) {
+          const parts = displayDate.split("-");
+          displayDate = `${parts[1]}.${parts[2]}.`;
         }
-
-        fetchedData.push({
-          id: docSnap.id,
-          title: data.courseName || "이름 없는 코스",
-          date: data.date || "0000.00.00",
-          location: detectedLocation,
-          places: data.places || []
+        historyList.push({
+          id: doc.id,
+          title: data.placeName || "",
+          address: data.address || "",
+          date: displayDate,
+          placeUrl: data.placeUrl || "",
+          lat: data.latitude,
+          lng: data.longitude,
+          category: data.category || ""
         });
       });
-
-      fetchedData.sort((a, b) => new Date(b.date.replace(/\./g, '-')).getTime() - new Date(a.date.replace(/\./g, '-')).getTime());
-      setMemories(fetchedData);
+      setHistory(historyList);
     } catch (error) {
-      console.error("❌ Firebase Fetch Error:", error);
-    } finally {
-      setIsLoading(false);
+      console.error("❌ [Firebase] 최근 검색 기록 로드 실패:", error);
     }
   };
 
-  const toggleSpecialMemory = async (courseId: string, placeId: number) => {
-    const course = memories.find(c => c.id === courseId);
-    if (!course) return;
-
-    const updatedPlaces = course.places.map(p => 
-      p.id === placeId ? { ...p, isSpecial: !p.isSpecial } : p
-    );
-
-    const updatedMemories = memories.map(c => 
-      c.id === courseId ? { ...c, places: updatedPlaces } : c
-    );
-    setMemories(updatedMemories);
-
-    if (selectedCourse && selectedCourse.id === courseId) {
-      setSelectedCourse({ ...selectedCourse, places: updatedPlaces });
-    }
-
+  const handleDeleteHistory = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
     try {
-      const courseRef = doc(db, "date_courses", courseId);
-      await updateDoc(courseRef, { places: updatedPlaces });
+      await deleteDoc(doc(db, "search_history", id));
+      setHistory((prev) => prev.filter((item) => item.id !== id));
     } catch (error) {
-      console.error("DB 업데이트 실패:", error);
-      alert("상태 변경에 실패했습니다.");
-      fetchMemories();
+      console.error("❌ [Firebase] 삭제 실패:", error);
     }
   };
 
-  const getFilteredMemories = () => {
-    const today = new Date();
-    return memories.filter((item) => {
-      if (item.date === "0000.00.00") return false;
-      const itemDate = new Date(item.date.replace(/\./g, '-'));
+  const handleOpenPreview = async (title: string, address: string, lat?: string, lng?: string, placeUrl?: string, category?: string) => {
+    if (!currentUser) return;
 
-      if (dateFilter === 'all') return true;
-      if (dateFilter === 'week') {
-        const oneWeekAgo = new Date(today);
-        oneWeekAgo.setDate(today.getDate() - 7);
-        return itemDate >= oneWeekAgo && itemDate <= today;
-      }
-      if (dateFilter === 'month') {
-        const oneMonthAgo = new Date(today);
-        oneMonthAgo.setMonth(today.getMonth() - 1);
-        return itemDate >= oneMonthAgo && itemDate <= today;
-      }
-      if (dateFilter === 'year') {
-        const oneYearAgo = new Date(today);
-        oneYearAgo.setFullYear(today.getFullYear() - 1);
-        return itemDate >= oneYearAgo && itemDate <= today;
-      }
-      if (dateFilter === 'custom') {
-        if (!startDate || !endDate) return true;
-        const start = new Date(startDate);
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59); 
-        return itemDate >= start && itemDate <= end;
-      }
-      return true;
-    });
-  };
-
-  // 💡 검색 페이지와 완벽히 동일한 팝업 호출 로직
-  const handleOpenPreview = (courseId: string, placeId: number, title: string, address: string, placeUrl?: string, category?: string, isSpecial?: boolean) => {
     const origUrl = placeUrl || "";
     let embedUrl = origUrl;
 
     if (origUrl.includes("place.map.kakao.com/")) {
-      const pid = origUrl.split("place.map.kakao.com/")[1]?.split("?")[0];
-      embedUrl = `https://place.map.kakao.com/m/${pid}`;
+      const placeId = origUrl.split("place.map.kakao.com/")[1]?.split("?")[0];
+      embedUrl = `https://place.map.kakao.com/m/${placeId}`;
     } else {
       embedUrl = `https://map.kakao.com/link/search/${encodeURIComponent(title)}`;
     }
@@ -188,375 +126,178 @@ export default function MemoryPage() {
     }
 
     setSelectedTarget({
-      courseId,
-      placeId,
       title,
       address,
+      lat: lat || "0",
+      lng: lng || "0",
       embedUrl,
       placeUrl: origUrl,
-      category: optimizedCategory || "장소",
-      isSpecial: !!isSpecial
+      category: optimizedCategory || "장소"
     });
+    setIsSheetOpen(true);
+
+    const today = new Date();
+    const formattedDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+    try {
+      const duplicateQuery = query(
+        collection(db, "search_history"),
+        where("user", "==", currentUser),
+        where("searchDate", "==", formattedDate),
+        where("placeName", "==", title)
+      );
+      const duplicateSnapshot = await getDocs(duplicateQuery);
+      
+      if (duplicateSnapshot.empty) {
+        await addDoc(collection(db, "search_history"), {
+          user: currentUser,
+          searchDate: formattedDate,      
+          placeName: title,               
+          address: address,               
+          latitude: lat ? parseFloat(lat) : null,  
+          longitude: lng ? parseFloat(lng) : null,
+          placeUrl: origUrl,      
+          category: optimizedCategory,
+          clickedAt: new Date()            
+        });
+        fetchSearchHistory();
+      }
+    } catch (firebaseError) {
+      console.error("❌ [Firebase History Save Error]:", firebaseError);
+    }
   };
 
-  const getSpecialMemories = (courses: PastDateItem[]): SpecialMemoryItem[] => {
-    const specials: SpecialMemoryItem[] = [];
-    courses.forEach(course => {
-      course.places.forEach(place => {
-        if (place.isSpecial) {
-          const origUrl = place.placeUrl || "";
-          let embedUrl = origUrl;
+  const handleConfirmSelection = () => {
+    if (!selectedTarget) return;
+    const { title, address, lat, lng, placeUrl } = selectedTarget;
+    setIsSheetOpen(false);
+    setSelectedTarget(null);
+    router.push(`/course/write?name=${encodeURIComponent(title)}&address=${encodeURIComponent(address)}&lat=${lat}&lng=${lng}&url=${encodeURIComponent(placeUrl)}`);
+  };
 
-          if (origUrl.includes("place.map.kakao.com/")) {
-            const placeId = origUrl.split("place.map.kakao.com/")[1]?.split("?")[0];
-            embedUrl = `https://place.map.kakao.com/m/${placeId}`;
-          } else {
-            embedUrl = `https://map.kakao.com/link/search/${encodeURIComponent(place.name)}`;
-          }
-
-          let optimizedCategory = place.category || "";
-          if (optimizedCategory.includes(">")) {
-            const parts = optimizedCategory.split(">");
-            optimizedCategory = parts[parts.length - 1].trim();
-          }
-
-          specials.push({
-            placeId: place.id,
-            courseId: course.id,
-            placeName: place.name,
-            date: course.date,
-            address: place.address || '주소 정보 없음',
-            note: place.notes && place.notes[0] ? place.notes[0].text : '',
-            category: optimizedCategory || '특별한 기억',
-            placeUrl: origUrl,
-            embedUrl: embedUrl
-          });
+  const fetchKakaoPlaces = (query: string) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+    const { kakao } = window as any;
+    if (!kakao || !kakao.maps) return;
+    kakao.maps.load(() => {
+      if (!kakao.maps.services) return;
+      const ps = new kakao.maps.services.Places();
+      ps.keywordSearch(query, (data: any, status: any) => {
+        if (status === kakao.maps.services.Status.OK) {
+          setSearchResults(data);
+          setIsSearching(true);
+        } else if (status === kakao.maps.services.Status.ZERO_RESULT) {
+          setSearchResults([]);
+          setIsSearching(true);
         }
       });
     });
-    return specials.sort((a, b) => new Date(b.date.replace(/\./g, '-')).getTime() - new Date(a.date.replace(/\./g, '-')).getTime());
   };
 
-  const filteredMemories = getFilteredMemories();
-  const specialMemories = getSpecialMemories(filteredMemories);
-  const mainPaddingTop = dateFilter === 'custom' ? 'pt-[240px]' : 'pt-[190px]';
+  useEffect(() => {
+    if (!keyword.trim()) {
+      setIsSearching(false);
+      setSearchResults([]);
+      return;
+    }
+    const delayDebounceTimer = setTimeout(() => { fetchKakaoPlaces(keyword); }, 200);
+    return () => clearTimeout(delayDebounceTimer);
+  }, [keyword]);
 
   return (
-    <main className={`min-h-screen bg-stone-50 pb-16 overflow-x-hidden relative transition-all duration-300 ${mainPaddingTop}`}>
-      
-      {/* 상단 고정 헤더 바 (조회 필터 통합) */}
-      <header className="fixed top-0 left-0 w-full z-30 pointer-events-none">
-        <div className="bg-white/95 backdrop-blur-md pb-4 z-20 rounded-b-[24px] shadow-sm pointer-events-auto transition-all duration-300">
-          <div className="pt-14 px-4 flex items-center justify-between pb-2">
-            <button onClick={() => router.back()} className="p-2 hover:bg-stone-50 rounded-xl transition text-stone-500">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
-              </svg>
-            </button>
-            <h1 className="text-[16px] font-bold text-stone-800 tracking-tight">우리의 추억함</h1>
-            <div className="w-9 h-9 flex items-center justify-center text-lg">📸</div> 
-          </div>
-
-          <div className="flex px-6 pt-2 pb-1 gap-2">
-            <button
-              onClick={() => setActiveMenu('past')}
-              className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeMenu === 'past' ? 'bg-stone-900 text-white shadow-sm' : 'bg-stone-50 text-stone-400 border border-stone-100/70 hover:bg-stone-100'
-              }`}
-            >
-              🎞️ 지난 데이트 기록
-            </button>
-            <button
-              onClick={() => setActiveMenu('special')}
-              className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeMenu === 'special' ? 'bg-rose-500 text-white shadow-sm' : 'bg-stone-50 text-stone-400 border border-stone-100/70 hover:bg-stone-100'
-              }`}
-            >
-              💝 기억에 남는 장소
-            </button>
-          </div>
-
-          <div className="px-6 mt-3 animate-fadeIn">
-            <div className="pt-3 border-t border-stone-100">
-              <span className="text-[10px] font-bold text-stone-400 block mb-2">📅 기간별 조회</span>
-              <div className="grid grid-cols-5 gap-1.5">
-                {[
-                  { id: 'all', label: '전체' },
-                  { id: 'week', label: '1주일' },
-                  { id: 'month', label: '1개월' },
-                  { id: 'year', label: '1년' },
-                  { id: 'custom', label: '직접입력' }
-                ].map((btn) => (
-                  <button
-                    key={btn.id}
-                    onClick={() => setDateFilter(btn.id as FilterType)}
-                    className={`py-1.5 text-[11px] font-bold rounded-lg transition-all border ${
-                      dateFilter === btn.id
-                        ? 'bg-orange-500 text-white border-orange-500 shadow-xs'
-                        : 'bg-stone-50 text-stone-500 border-stone-100 hover:bg-stone-100'
-                    }`}
-                  >
-                    {btn.label}
-                  </button>
-                ))}
-              </div>
-
-              {dateFilter === 'custom' && (
-                <div className="mt-3 pt-3 border-t border-stone-50 flex items-center gap-2 animate-fadeIn">
-                  <input 
-                    type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
-                    className="flex-1 p-2 bg-stone-50 border border-stone-100 rounded-xl text-xs font-semibold text-stone-700 outline-none focus:border-orange-300 focus:bg-white transition"
-                  />
-                  <span className="text-stone-300 text-xs font-bold">~</span>
-                  <input 
-                    type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
-                    className="flex-1 p-2 bg-stone-50 border border-stone-100 rounded-xl text-xs font-semibold text-stone-700 outline-none focus:border-orange-300 focus:bg-white transition"
-                  />
-                </div>
-              )}
-            </div>
+    <main className="h-screen bg-stone-50 flex flex-col overflow-hidden">
+      <div className="sticky top-0 bg-white/95 backdrop-blur-md pb-5 z-20 rounded-b-[24px] shadow-sm shrink-0">
+        <div className="pt-14 px-4 flex items-center gap-3">
+          <button onClick={() => router.back()} className="p-2 active:bg-stone-100 rounded-xl transition text-stone-500">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" /></svg>
+          </button>
+          <div className="flex-1 flex items-center bg-stone-50 border border-stone-200/60 rounded-2xl px-4 py-3 focus-within:ring-2 focus-within:ring-orange-100 focus-within:bg-white focus-within:border-orange-200 transition-all">
+            <input
+              type="text"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder="검색어를 입력하세요."
+              autoFocus
+              className="w-full bg-transparent outline-none text-[15px] text-stone-800 placeholder-stone-400 font-medium"
+            />
+            {keyword && <button onClick={() => setKeyword('')} className="p-0.5 text-stone-400 mr-1.5 text-xs bg-stone-200 rounded-full w-4 h-4 flex items-center justify-center shrink-0">✕</button>}
           </div>
         </div>
-      </header>
+      </div>
 
-      <div className="h-[70px] shrink-0 w-full" aria-hidden="true"></div>
+      <div className="mx-6 my-6 bg-white rounded-2xl border border-stone-100 shadow-sm overflow-hidden flex flex-col max-h-[calc(100vh-160px)]">
+        <div className="px-5 py-4 bg-white border-b border-stone-50 flex items-center shrink-0">
+          <span className="text-xs font-bold text-stone-400 tracking-tight">{isSearching ? `🔍 실시간 검색 결과` : "⏳ 내가 검색했던 장소 목록"}</span>
+        </div>
 
-      {/* 메인 피드 리스트 */}
-      <section className="mx-6 mt-2">
-        {isLoading ? (
-          <div className="text-center py-20 bg-white rounded-2xl border border-stone-100 shadow-sm text-stone-400 text-xs font-medium leading-relaxed">
-            ⏳ 추억을 불러오는 중...
-          </div>
-        ) : activeMenu === 'special' ? (
-          specialMemories.length === 0 ? (
-            <div className="text-center py-20 bg-white rounded-2xl border border-stone-100 shadow-sm text-stone-300 text-xs font-medium leading-relaxed">
-              특별한 기억으로 지정된 장소가 없습니다.
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {specialMemories.map((item) => (
-                <div 
-                  key={`${item.courseId}-${item.placeId}`} 
-                  onClick={() => handleOpenPreview(item.courseId, item.placeId, item.placeName, item.address, item.placeUrl, item.category, true)}
-                  className="border border-rose-100 bg-gradient-to-tr from-rose-50/40 to-white rounded-2xl p-5 shadow-sm transition-all flex flex-col justify-between cursor-pointer hover:shadow-md h-full"
-                >
-                  <div className="flex items-start gap-4">
-                    <div className="w-11 h-11 rounded-xl flex items-center justify-center text-xl shadow-sm shrink-0 border bg-rose-50 border-rose-100 text-rose-500">
-                      💝
+        <div className="flex-1 overflow-y-auto divide-y divide-stone-50">
+          {isSearching && searchResults.length > 0 && (
+            searchResults.map((item) => (
+              <div key={item.id} onClick={() => handleOpenPreview(item.place_name, item.road_address_name || item.address_name, item.y, item.x, item.place_url, item.category_name)} className="flex items-center justify-between px-5 py-4 active:bg-stone-50 transition cursor-pointer bg-white">
+                <div className="flex items-center gap-3.5 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-orange-50 text-orange-500 flex items-center justify-center text-base shadow-sm shrink-0">🕐</div>
+                  <div className="flex flex-col min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-[15px] text-stone-800 tracking-tight truncate">{item.place_name}</span>
+                      {item.category_group_name && <span className="text-[9px] font-semibold text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded shrink-0">{item.category_group_name}</span>}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex justify-between items-start gap-2">
-                        <h3 className="font-bold text-[15px] text-stone-800 tracking-tight truncate">{item.placeName}</h3>
-                        <span className="text-[10px] font-medium text-stone-400 shrink-0 mt-0.5">{item.date}</span>
-                      </div>
-                      <p className="text-xs text-stone-400 font-medium truncate mt-0.5">{item.address}</p>
+                    <span className="text-xs text-stone-400 font-medium truncate mt-0.5">{item.road_address_name || item.address_name}</span>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+
+          {!isSearching && (
+            history.length === 0 ? (
+              <div className="text-center py-14 text-stone-300 text-sm font-medium bg-white">최근에 선택하여 저장한 데이트 장소가 없습니다.</div>
+            ) : (
+              history.map((item) => (
+                <div key={item.id} onClick={() => handleOpenPreview(item.title, item.address, item.lat?.toString(), item.lng?.toString(), item.placeUrl, item.category)} className="flex items-center justify-between px-5 py-4 active:bg-stone-50 transition cursor-pointer bg-white">
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-stone-100 text-stone-400 flex items-center justify-center text-base shadow-sm shrink-0">🕐</div>
+                    <div className="flex flex-col min-w-0">
+                      <span className="font-bold text-[15px] text-stone-800 tracking-tight truncate">{item.title}</span>
+                      <span className="text-xs text-stone-400 font-medium truncate mt-0.5">{item.address}</span>
                     </div>
                   </div>
-                  {item.note && (
-                    <div className="mt-4 p-3 rounded-xl text-[11px] font-medium leading-relaxed bg-white/90 text-rose-900/90 border border-rose-100/50 italic">
-                      "{item.note}"
-                    </div>
-                  )}
-                  
-                  <div className="flex-grow"></div>
-                  
-                  <div className="mt-4 flex justify-between items-center border-t border-rose-100/30 pt-3">
-                    <span className="text-[11px] font-bold text-stone-400">카카오맵에서 상세 보기 🔍</span>
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation(); 
-                        toggleSpecialMemory(item.courseId, item.placeId);
-                      }}
-                      className="text-[10px] font-bold text-rose-400 bg-white px-3 py-1.5 rounded-lg border border-rose-100 hover:bg-rose-50 transition"
-                    >
-                      기억 해제하기
+                  <div className="flex items-center gap-3 flex-shrink-0 ml-2">
+                    <span className="text-[11px] font-medium text-stone-400/70 tracking-tighter">{item.date}</span>
+                    <button onClick={(e) => handleDeleteHistory(e, item.id)} className="text-stone-300 hover:text-red-400 p-1 transition">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" /></svg>
                     </button>
                   </div>
                 </div>
-              ))}
-            </div>
-          )
-        ) : filteredMemories.length === 0 ? (
-          <div className="text-center py-20 bg-white rounded-2xl border border-stone-100 shadow-sm text-stone-300 text-xs font-medium leading-relaxed">
-            선택한 기간 내에<br/>다녀온 데이트 추억이 없습니다.
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {filteredMemories.map((item) => {
-              const hasSpecialPlace = item.places.some(p => p.isSpecial);
-              
-              return (
-                <div 
-                  key={item.id}
-                  onClick={() => setSelectedCourse(item)}
-                  className={`border rounded-2xl p-5 shadow-sm transition-all cursor-pointer hover:shadow-md flex flex-col justify-between h-full ${
-                    hasSpecialPlace ? 'border-rose-100 bg-rose-50/10' : 'bg-white border-stone-100'
-                  }`}
-                >
-                  <div className="flex items-start gap-4">
-                    <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-xl shadow-sm shrink-0 border ${
-                      hasSpecialPlace ? 'bg-rose-50 border-rose-100' : 'bg-stone-50 border-stone-100'
-                    }`}>
-                      {hasSpecialPlace ? '🥰' : '😊'}
-                    </div>
+              ))
+            )
+          )}
+        </div>
+      </div>
 
-                    <div className="flex-1 min-w-0">
-                      <div className="flex justify-between items-start gap-2">
-                        <h3 className="font-bold text-[15px] text-stone-800 tracking-tight truncate">{item.title}</h3>
-                        <span className="text-[10px] font-medium text-stone-400 shrink-0 mt-0.5">{item.date}</span>
-                      </div>
-                      <p className="text-xs text-stone-400 font-medium truncate mt-0.5">
-                      🧭 {item.location} 포함 총 {item.places.length}곳
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex-grow"></div>
-
-                  <div className="mt-4 pt-3 border-t border-stone-50 text-right">
-                    <span className="text-[11px] font-bold text-stone-400 hover:text-stone-600">상세 보기 및 기억 지정 →</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* 💡 카카오맵 팝업 모달 (가장 높은 z-index 60 적용) */}
-      {selectedTarget && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[60] flex items-end justify-center">
-          <div className="absolute inset-0" onClick={() => setSelectedTarget(null)} />
+      {isSheetOpen && selectedTarget && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-end justify-center">
+          <div className="absolute inset-0" onClick={() => { setIsSheetOpen(false); setSelectedTarget(null); }} />
           <div className="w-full max-w-md h-[82vh] bg-white rounded-t-[32px] z-10 shadow-[0_-8px_30px_rgba(0,0,0,0.15)] flex flex-col overflow-hidden animate-slide-up transform">
             <div className="px-6 pt-4 pb-3 border-b border-stone-100 shrink-0 text-left bg-white">
               <div className="w-12 h-1 bg-stone-200 rounded-full mx-auto mb-3" />
               <div className="flex justify-between items-start gap-2">
-                <div className="min-w-0">
+                <div>
                   <h4 className="font-bold text-stone-900 text-base tracking-tight truncate max-w-[260px]">{selectedTarget.title}</h4>
                   <p className="text-[11px] text-stone-400 font-medium truncate max-w-[260px] mt-0.5">{selectedTarget.address}</p>
                 </div>
-                <span className="text-[10px] font-bold text-orange-600 bg-orange-50 px-2 py-1 rounded-md shrink-0">
-                  {selectedTarget.category}
-                </span>
+                <span className="text-[10px] font-bold text-orange-600 bg-orange-50 px-2 py-1 rounded-md shrink-0">{selectedTarget.category}</span>
               </div>
             </div>
-
             <div className="flex-1 w-full bg-stone-50 relative">
-              <iframe
-                src={selectedTarget.embedUrl}
-                className="w-full h-full border-none"
-                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-                scrolling="yes"
-              />
+              <iframe src={selectedTarget.embedUrl} className="w-full h-full border-none" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" scrolling="yes" />
             </div>
-
             <div className="p-4 bg-white border-t border-stone-100 flex gap-3 shrink-0 pb-7">
-              <button
-                onClick={() => setSelectedTarget(null)}
-                className="flex-1 py-3.5 bg-stone-100 text-stone-500 font-bold rounded-xl text-xs active:bg-stone-200 transition"
-              >
-                닫기
-              </button>
-              <button
-                onClick={() => {
-                  toggleSpecialMemory(selectedTarget.courseId, selectedTarget.placeId);
-                  setSelectedTarget(null); // 상태 변경 후 깔끔하게 창 닫기
-                }}
-                className={`flex-[2.5] py-3.5 font-bold rounded-xl text-xs shadow-md transition ${
-                  selectedTarget.isSpecial 
-                    ? 'bg-stone-100 text-stone-500 shadow-stone-200/10 active:bg-stone-200' 
-                    : 'bg-rose-500 text-white shadow-rose-500/10 active:bg-rose-600'
-                }`}
-              >
-                {selectedTarget.isSpecial ? "💔 특별한 기억 해제하기" : "💝 특별한 기억으로 지정하기"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 상세보기 및 특별한 기억 토글 모달 (지난 데이트 기록 탭용, z-index 50) */}
-      {selectedCourse && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-end justify-center">
-          <div className="absolute inset-0" onClick={() => setSelectedCourse(null)} />
-          <div className="w-full max-w-md h-[85vh] bg-stone-50 rounded-t-[32px] z-10 shadow-2xl flex flex-col overflow-hidden animate-slide-up">
-            
-            <div className="px-6 pt-5 pb-4 border-b border-stone-100 bg-white shrink-0">
-              <div className="w-12 h-1 bg-stone-200 rounded-full mx-auto mb-4" />
-              <div className="flex justify-between items-end gap-3">
-                <div className="min-w-0 flex-1">
-                  <h3 className="font-bold text-lg text-stone-900 tracking-tight truncate">{selectedCourse.title}</h3>
-                  <p className="text-[11px] font-medium text-stone-400 mt-1">{selectedCourse.date} 데이트 코스</p>
-                </div>
-                <button 
-                  onClick={() => setSelectedCourse(null)}
-                  className="w-8 h-8 flex items-center justify-center rounded-full bg-stone-100 text-stone-500 font-bold text-sm"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-6 space-y-4">
-              {selectedCourse.places.map((place, index) => (
-                <div key={place.id} className="relative pb-2">
-                  {index < selectedCourse.places.length - 1 && (
-                    <div className="absolute left-[21px] top-12 bottom-0 w-[2px] border-l-2 border-dashed border-stone-200 z-0" />
-                  )}
-
-                  {/* 💡 장소를 클릭하면 카카오맵 팝업이 뜨도록 연결했습니다 */}
-                  <div 
-                    onClick={() => handleOpenPreview(selectedCourse.id, place.id, place.name, place.address, place.placeUrl, place.category, place.isSpecial)}
-                    className={`p-5 rounded-2xl border shadow-xs relative z-10 flex flex-col gap-3 transition-colors cursor-pointer hover:shadow-md ${
-                      place.isSpecial ? 'bg-rose-50/30 border-rose-200' : 'bg-white border-stone-100'
-                    }`}
-                  >
-                    <div className="flex justify-between items-start gap-2">
-                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                        <span className={`text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full shrink-0 ${
-                          place.isSpecial ? 'bg-rose-500 text-white' : 'bg-stone-800 text-white'
-                        }`}>
-                          {index + 1}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <h5 className={`font-bold text-[15px] tracking-tight truncate ${place.isSpecial ? 'text-rose-900' : 'text-stone-800'}`}>
-                            {place.name}
-                          </h5>
-                        </div>
-                      </div>
-                      
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation(); // 버튼 클릭 시 카카오맵 팝업이 뜨지 않도록 방지
-                          toggleSpecialMemory(selectedCourse.id, place.id);
-                        }}
-                        className={`shrink-0 flex items-center justify-center w-8 h-8 rounded-full border transition-all ${
-                          place.isSpecial 
-                            ? 'bg-rose-100 border-rose-200 text-rose-500 scale-110 shadow-sm' 
-                            : 'bg-stone-50 border-stone-200 text-stone-300 hover:bg-stone-100'
-                        }`}
-                      >
-                        {place.isSpecial ? '❤️' : '🤍'}
-                      </button>
-                    </div>
-
-                    <div className="text-[11px] text-stone-400 font-medium pl-8 -mt-2">
-                      {place.address || "주소 정보 없음"}
-                    </div>
-
-                    {place.notes && place.notes.length > 0 && place.notes.some(n => n.text.trim()) && (
-                      <div className="bg-white rounded-xl p-3 space-y-2 border border-stone-100/80 ml-8">
-                        {place.notes.map((note, nIdx) => note.text.trim() && (
-                          <div key={note.id} className="text-[11px] text-stone-600 font-medium flex items-start gap-2">
-                            <span className="text-stone-300 select-none font-bold">{nIdx + 1}.</span>
-                            <p className="leading-relaxed whitespace-pre-wrap flex-1">{note.text}</p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
+              <button onClick={() => { setIsSheetOpen(false); setSelectedTarget(null); }} className="flex-1 py-3.5 bg-stone-100 text-stone-500 font-bold rounded-xl text-xs active:bg-stone-200 transition">닫 기</button>
+              <button onClick={handleConfirmSelection} className="flex-[2.5] py-3.5 bg-orange-500 text-white font-bold rounded-xl text-xs shadow-md shadow-orange-500/10 active:bg-orange-600 transition">데이트 코스에 추가하기</button>
             </div>
           </div>
         </div>
