@@ -1,86 +1,95 @@
-// app/api/recommend/route.ts
-
 import { NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
+
+export const dynamic = "force-dynamic";
 
 const apiKey = process.env.GEMINI_API_KEY;
 
 if (!apiKey) {
-  console.error("GEMINI_API_KEY is not set");
+  console.error("❌ [Gemini API] GEMINI_API_KEY가 .env.local 파일에 설정되지 않았습니다.");
 }
 
-const genAI = new GoogleGenerativeAI(apiKey || "");
+const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
 export async function POST(request: Request) {
   try {
-    const { weather, username } = await request.json();
+    if (!ai) {
+      return NextResponse.json(
+        { recommendation: "AI 연동이 원활하지 않습니다." },
+        { status: 200 }
+      );
+    }
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-    });
+    let body;
+    try {
+      body = await request.json();
+    } catch (e) {
+      return NextResponse.json(
+        { recommendation: "올바르지 않은 요청 데이터 형식입니다." },
+        { status: 400 }
+      );
+    }
 
+    const { date } = body;
+
+    const fallbackDate = new Date();
+    const todayStr = date || `${fallbackDate.getFullYear()}.${String(fallbackDate.getMonth() + 1).padStart(2, '0')}.${String(fallbackDate.getDate()).padStart(2, '0')}`;
+
+    // 💡 프롬프트 수정: 불필요한 인사는 빼되, '친절하고 다정한 존댓말'을 사용하도록 강력히 지시
     const prompt = `
-너는 커플들을 위한 대한민국 최신 데이트 트렌드 및 코스 추천 AI 전문가야.
+너는 대한민국 서울/경기권 최신 데이트 트렌드 전문가이자, 연인들을 위한 다정한 조력자야.
 
-유저 이름은 "${username}"이고,
-다가오는 데이트 날씨는 "${weather.condition}",
-기온은 "${weather.temp}",
-강수확률은 "${weather.pop}"이야.
+[상황 조건]
+- 기준 날짜: ${todayStr}
+- 장소: 서울 및 경기권 위주
 
-현재 2026년 최신 데이트 트렌드,
-유행하는 음식/카페,
-극장가 인기 영화,
-성수·한남·신용산 등 핫플레이스 감성을 조합해서
-이 날씨에 딱 맞는 센스 있는 데이트 코스를 추천해줘.
+[필수 요구사항]
+1. 팩트 기반 추천 (매우 중요): 반드시 구글 검색을 활용하여 해당 날짜 기준으로 '실제로 영업 중인' 유명 핫플레이스 상호명, '실제로 존재하는' 디저트나 메뉴, '현재 개봉 및 상영 중인' 진짜 영화 제목만 추천해. 
+2. 환각 금지: 상호명이나 영화 제목을 임의로 지어내면 절대 안 돼. 실시간 정보 확인이 어렵다면 차라리 특정 장르(예: '요즘 인기 있는 로맨스 영화', '성수동의 유명한 소금빵 맛집')처럼 안전하게 표현해.
+3. 친절하고 다정한 존댓말: 유저의 이름이나 "안녕하세요" 같은 불필요한 인사말은 생략하고 본론으로 바로 시작하되, 문장의 끝맺음은 반드시 친절하고 부드러운 존댓말(~해요, ~어떨까요? 등)로 작성해줘. 연인에게 예쁜 데이트를 제안하듯 따뜻한 톤이어야 해.
+4. 분량: 읽기 편한 2~3줄 문장으로 요약해.
 
-반드시 JSON만 반환해.
-
+반드시 아래 지정된 JSON 형식으로만 응답해.
+\`\`\`json
 {
-  "recommendation": "추천 문장"
+  "recommendation": "친절하고 다정한 존댓말로 작성된 구체적이고 실존하는 장소, 메뉴, 영화 추천 문장"
 }
+\`\`\`
 `;
 
-    const result = await model.generateContent({
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: prompt }],
-        },
-      ],
-      generationConfig: {
-        responseMimeType: "application/json",
-      },
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      tools: [{ googleSearch: {} }],
     });
 
-    const responseText = result.response.text();
+    const responseText = response.text;
+    console.log("📥 [Gemini 응답 수신]:", responseText);
 
-    console.log("Gemini Response:");
-    console.log(responseText);
+    if (!responseText) {
+      throw new Error("Gemini에서 빈 응답이 반환되었습니다.");
+    }
+
+    let cleanedText = responseText;
+    if (cleanedText.includes("```")) {
+      cleanedText = cleanedText.replace(/```json/g, "").replace(/```/g, "").trim();
+    }
 
     let data;
-
     try {
-      data = JSON.parse(responseText);
+      data = JSON.parse(cleanedText);
     } catch (parseError) {
-      console.error("JSON Parse Error:", parseError);
-
-      data = {
-        recommendation: responseText,
-      };
+      console.error("❌ [Error] AI 응답 JSON 최종 파싱 실패:", parseError);
+      data = { recommendation: "AI 연동이 원활하지 않습니다." };
     }
 
     return NextResponse.json(data);
-  } catch (error) {
-    console.error("Gemini API Error:", error);
 
+  } catch (error: any) {
+    console.error("❌ [Gemini API 최종 통신 실패 원인]:", error);
     return NextResponse.json(
-      {
-        recommendation:
-          "선정릉역 인근, 아늑하고 조용한 분위기의 스시 오마카세는 어떠세요? 조용한 대화가 필요할 때 안성맞춤입니다.",
-      },
-      {
-        status: 200,
-      }
+      { recommendation: "AI 연동이 원활하지 않습니다." },
+      { status: 200 }
     );
   }
 }
