@@ -344,7 +344,7 @@ export default function MemoryPage() {
                 >
                   <div className="flex items-start gap-4">
                     <div className="w-11 h-11 rounded-xl flex items-center justify-center text-xl shadow-sm shrink-0 border bg-rose-50 border-rose-100 text-rose-500">
-                      💝
+                      💖
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-start gap-2">
@@ -372,7 +372,7 @@ export default function MemoryPage() {
                       }}
                       className="text-[10px] font-bold text-white bg-stone-700 px-3 py-1.5 rounded-lg border border-stone-800 hover:bg-stone-800 transition shadow-sm"
                     >
-                      기억 해제하기
+                      해제하기
                     </button>
                   </div>
                 </div>
@@ -417,7 +417,7 @@ export default function MemoryPage() {
                   <div className="flex-grow"></div>
 
                   <div className="mt-4 pt-3 border-t border-stone-50 text-right">
-                    <span className="text-[11px] font-bold text-stone-400 hover:text-stone-600">상세 보기 및 기억 지정 →</span>
+                    <span className="text-[11px] font-bold text-stone-400 hover:text-stone-600">상세 보기 →</span>
                   </div>
                 </div>
               );

@@ -30,7 +30,7 @@ export const metadata: Metadata = {
 
 // 2. 모바일 웹앱(PWA) 최적화를 위한 뷰포트 설정
 export const viewport: Viewport = {
-  themeColor: "#ff4757", // manifest.json의 theme_color도 이 색상과 맞추는 것을 추천합니다.
+  themeColor: "#ffffff", // manifest.json의 theme_color도 이 색상과 맞추는 것을 추천합니다.
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
