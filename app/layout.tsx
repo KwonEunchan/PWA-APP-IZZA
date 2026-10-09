@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
+import PwaBootstrap from "./PwaBootstrap";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -21,7 +22,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "DatingApp",
+    title: "이짜!",
   },
   icons: {
     apple: "/icon-192.png", // public/icon-192.png 파일과 매핑됩니다.
@@ -51,6 +52,7 @@ export default function RootLayout({
         <main className="flex-1 w-full max-w-md mx-auto bg-white shadow-sm overflow-x-hidden min-h-screen flex flex-col">
           {children}
         </main>
+        <PwaBootstrap />
 
         {/* [카카오 지도 API 스크립트 연동 최적화]
           - 프로토콜(// 대신 https:)을 명시하여 로컬 환경(http://localhost)에서의 파싱 에러를 방지합니다.
@@ -64,4 +66,4 @@ export default function RootLayout({
       </body>
     </html>
   );
-}
+}

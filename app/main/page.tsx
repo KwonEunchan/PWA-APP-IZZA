@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { db } from '@/lib/firebase';
 import { collection, getDocs, query, doc, updateDoc } from 'firebase/firestore';
+import { enablePush, getPushState, detachPush, isIos, type PushState } from '@/lib/push-client';
 
 // 🌐 주소에서 OpenWeather용 영문 도시명을 추출하는 헬퍼 함수
 const getCityNameFromAddress = (address: string) => {
@@ -25,9 +26,6 @@ export default function MyPage() {
   const [username, setUsername] = useState<string>("유저");
   const [currentUserKey, setCurrentUserKey] = useState<string>("me");
   
-  const [aiRecommendation, setAiRecommendation] = useState<string>("");
-  const [isAiLoading, setIsAiLoading] = useState<boolean>(true);
-  
   // 상태 카운트 및 새 글 알림(빨간 점) 상태
   const [pendingCount, setPendingCount] = useState<number>(0);
   const [approvedCount, setApprovedCount] = useState<number>(0);
@@ -37,6 +35,55 @@ export default function MyPage() {
   
   const [upcomingDate, setUpcomingDate] = useState<any>(null);
   const [selectedCourse, setSelectedCourse] = useState<any>(null);
+
+  // 🔔 푸시 알림 상태
+  const [pushState, setPushState] = useState<PushState>('unsupported');
+  const [isPushBusy, setIsPushBusy] = useState(false);
+  const [pushNotice, setPushNotice] = useState('');
+
+  useEffect(() => {
+    setPushState(getPushState());
+  }, []);
+
+  const handleEnablePush = async () => {
+    setIsPushBusy(true);
+    setPushNotice('');
+    try {
+      const result = await enablePush(currentUserKey);
+      setPushState(result);
+      if (result === 'granted') setPushNotice('알림이 켜졌어요! 아래 버튼으로 테스트해 보세요.');
+      if (result === 'denied') setPushNotice('알림이 차단됐어요. 기기 설정에서 허용해 주세요.');
+    } catch (e) {
+      console.error(e);
+      setPushNotice('알림 설정 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.');
+    } finally {
+      setIsPushBusy(false);
+    }
+  };
+
+  const handleTestPush = async () => {
+    setIsPushBusy(true);
+    setPushNotice('');
+    try {
+      const res = await fetch('/api/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: currentUserKey, to: currentUserKey, test: true,
+          title: '🔔 이짜! 테스트 알림', body: '알림이 잘 도착했어요 💕', url: '/main',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) setPushNotice(`전송 실패: ${data.error || res.status}`);
+      else if (data.sent > 0) setPushNotice(`테스트 알림을 보냈어요 (기기 ${data.sent}대)`);
+      else setPushNotice('등록된 기기가 없어요. 알림 켜기를 다시 눌러주세요.');
+    } catch (e) {
+      console.error(e);
+      setPushNotice('테스트 알림 전송에 실패했어요.');
+    } finally {
+      setIsPushBusy(false);
+    }
+  };
 
   // ☁️ 날씨 상태
   const [weather, setWeather] = useState<{ type: 'available' | 'unavailable' | 'loading'; temp?: number; icon?: string; desc?: string }>({ type: 'loading' });
@@ -129,32 +176,7 @@ export default function MyPage() {
       }
     };
 
-    const fetchAIRecommendation = async () => {
-      try {
-        setIsAiLoading(true);
-
-        const systemPrompt = `오늘 날짜는 ${todayStr}입니다. 알아서 오늘 서울/경기권의 날씨와 계절감을 고려해 데이트 코스를 하나 추천해주세요. 최신 유행하는 트렌드(영화, 핫한 디저트, 인기 있는 음식 등)를 꼭 반영해서 트렌디하게 구성해주세요. 사용자 이름이나 인사말은 절대 넣지 말고, 오직 데이트 코스에 대한 정보성 텍스트만 깔끔하게 작성해주세요.`;
-
-        const res = await fetch('/date-recommend', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            username: computedName, 
-            date: todayStr,
-            prompt: systemPrompt 
-          })
-        });
-        const data = await res.json();
-        setAiRecommendation(data.recommendation || "AI 연동이 원활하지 않습니다.");
-      } catch (err) {
-        setAiRecommendation("AI 연동이 원활하지 않습니다.");
-      } finally {
-        setIsAiLoading(false);
-      }
-    };
-
     fetchDashboardData();
-    fetchAIRecommendation();
   }, []);
 
   useEffect(() => {
@@ -204,9 +226,10 @@ export default function MyPage() {
     }
   }, [upcomingDate]);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await detachPush(); // 로그아웃한 기기로는 알림이 가지 않게
     localStorage.clear();
-    router.push('/');
+    router.replace('/');
   };
 
   return (
@@ -223,6 +246,47 @@ export default function MyPage() {
         </div>
         <button onClick={handleLogout} className="px-3 py-1.5 text-xs font-medium border border-stone-200 rounded-xl text-stone-500 hover:bg-stone-50 transition">로그아웃</button>
       </section>
+
+      {pushState !== 'unsupported' && (
+        <section className="mx-6 mt-4">
+          {pushState === 'granted' ? (
+            <div className="px-4 py-3 bg-white rounded-2xl border border-stone-100 shadow-sm flex items-center justify-between gap-3">
+              <span className="text-xs font-semibold text-stone-500">🔔 알림 켜짐</span>
+              <button
+                onClick={handleTestPush}
+                disabled={isPushBusy}
+                className="text-[11px] font-bold text-stone-500 bg-stone-50 border border-stone-100 px-3 py-1.5 rounded-xl active:bg-stone-100 transition disabled:opacity-50"
+              >
+                {isPushBusy ? '보내는 중...' : '테스트 알림 받기'}
+              </button>
+            </div>
+          ) : pushState === 'needs-install' ? (
+            <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
+              <p className="text-xs font-bold text-amber-800">📲 알림을 받으려면 홈 화면에 추가해 주세요</p>
+              <p className="text-[11px] text-amber-700/80 mt-1 leading-relaxed">
+                {isIos()
+                  ? 'Safari 하단 공유 버튼 → "홈 화면에 추가" → 홈 화면의 이짜! 아이콘으로 열면 알림을 켤 수 있어요.'
+                  : '브라우저 메뉴에서 "앱 설치" 또는 "홈 화면에 추가"를 눌러주세요.'}
+              </p>
+            </div>
+          ) : pushState === 'denied' ? (
+            <div className="p-4 bg-stone-100 rounded-2xl border border-stone-200">
+              <p className="text-xs font-bold text-stone-600">🔕 알림이 차단돼 있어요</p>
+              <p className="text-[11px] text-stone-500 mt-1 leading-relaxed">기기 설정 → 알림에서 이짜!(또는 이 사이트)의 알림을 허용해 주세요.</p>
+            </div>
+          ) : (
+            <button
+              onClick={handleEnablePush}
+              disabled={isPushBusy}
+              className="w-full p-4 bg-rose-50 rounded-2xl border border-rose-100 text-left active:scale-[0.99] transition disabled:opacity-60"
+            >
+              <p className="text-xs font-bold text-rose-600">🔔 {isPushBusy ? '알림 설정 중...' : '알림 켜기'}</p>
+              <p className="text-[11px] text-rose-500/80 mt-1">상대방이 코스를 보내거나 승인·반려하면 바로 알려드려요.</p>
+            </button>
+          )}
+          {pushNotice && <p className="text-[11px] text-stone-500 font-medium mt-2 px-1">{pushNotice}</p>}
+        </section>
+      )}
 
       <section className="px-6 py-4 mt-3">
         <h3 className="font-bold text-stone-800 mb-3 text-sm tracking-tight">📅 곧 다가오는 데이트</h3>
@@ -274,13 +338,6 @@ export default function MyPage() {
         </div>
       </section>
 
-      <section className="px-6 py-4 mt-2">
-        <h3 className="font-bold text-stone-800 mb-3 text-sm flex items-center gap-2 tracking-tight">🎯 AI가 추천하는 데이트 코스</h3>
-        <div className="p-5 bg-indigo-50/60 rounded-2xl border border-indigo-100 shadow-sm">
-          {isAiLoading ? <div className="animate-pulse h-4 bg-indigo-200/60 rounded-md"></div> : <p className="text-sm text-indigo-950 font-medium">"{aiRecommendation}"</p>}
-        </div>
-      </section>
-
       <section className="mx-6 mt-3 bg-white rounded-2xl border border-stone-100 shadow-sm overflow-hidden">
         {menuItems.map((item, index) => (
           <div key={index} onClick={() => router.push(item.path)} className="px-5 py-4 flex justify-between items-center border-t border-stone-50 first:border-t-0 hover:bg-stone-50 cursor-pointer">
@@ -322,4 +379,4 @@ export default function MyPage() {
       </div>
     </main>
   );
-}
+}

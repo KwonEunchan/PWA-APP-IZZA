@@ -4,6 +4,7 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { db } from '../../lib/firebase';
 import { collection, getDocs, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { notifyPartner, subjectOf } from '../../lib/push-client';
 
 type Note = { id: number; text: string };
 type Place = { id: number; name: string; address: string; category: string; notes: Note[] };
@@ -19,6 +20,8 @@ type CourseItem = {
   read_me?: boolean;
   read_minji?: boolean;
   isDateModified?: boolean;
+  reviewComment?: string;
+  reviewedBy?: string;
 };
 
 const TAB_MENU = [
@@ -26,7 +29,7 @@ const TAB_MENU = [
   { id: 'draft', label: '임시 저장', activeBg: 'bg-indigo-600' },
   { id: 'waiting', label: '승인 대기', activeBg: 'bg-orange-500' },
   { id: 'approved', label: '승인 완료', activeBg: 'bg-emerald-600' },
-  { id: 'cancel', label: '취소', activeBg: 'bg-gray-600' },
+  { id: 'cancel', label: '반려·취소', activeBg: 'bg-gray-600' },
 ];
 
 function ArchiveContent() {
@@ -43,6 +46,10 @@ function ArchiveContent() {
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
   const [confirmedDate, setConfirmedDate] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // 반려(수정 요청) 사유 입력 모달
+  const [rejectTarget, setRejectTarget] = useState<CourseItem | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   const [todayStr, setTodayStr] = useState<string>('');
   const [currentUser, setCurrentUser] = useState<string>('');
@@ -116,6 +123,8 @@ function ArchiveContent() {
           read_me: data.read_me || false,
           read_minji: data.read_minji || false,
           isDateModified: data.isDateModified || false,
+          reviewComment: data.reviewComment || '',
+          reviewedBy: data.reviewedBy || '',
           _createdAtMs: createdAtMs
         });
       });
@@ -148,7 +157,7 @@ function ArchiveContent() {
     const userKey = currentUser || 'me';
     const isUnread = userKey === 'minji' ? !course.read_minji : !course.read_me;
 
-    if (isUnread && (course.status === 'pending' || course.status === 'approved')) {
+    if (isUnread && (course.status === 'pending' || course.status === 'approved' || course.status === 'canceled')) {
       try {
         const updateField = userKey === 'minji' ? 'read_minji' : 'read_me';
         const courseRef = doc(db, "date_courses", course.id);
@@ -195,6 +204,20 @@ function ArchiveContent() {
         ...(isDateChange && { isDateModified: true }) 
       });
 
+      await notifyPartner(currentUser, isDateChange
+        ? {
+            title: `📅 ${subjectOf(currentUser)} 데이트 날짜를 바꿨어요`,
+            body: `「${selectedCourse.title}」 → ${targetFormattedDate}`,
+            url: '/archive?tab=approved',
+            tag: `course-${selectedCourse.id}`,
+          }
+        : {
+            title: `✅ ${subjectOf(currentUser)} 데이트 코스를 승인했어요!`,
+            body: `「${selectedCourse.title}」 · ${targetFormattedDate} 데이트 확정 💕`,
+            url: '/archive?tab=approved',
+            tag: `course-${selectedCourse.id}`,
+          });
+
       alert(
         isDateChange 
           ? `데이트 일정이 [${targetFormattedDate}]로 변경되었습니다!`
@@ -215,6 +238,7 @@ function ArchiveContent() {
 
   const handleCancelApprovedCourse = async (courseId: string) => {
     if (!confirm("정말로 이 데이트 코스를 승인 취소하시겠습니까?")) return;
+    const title = courses.find((c) => c.id === courseId)?.title || '데이트 코스';
 
     try {
       const courseRef = doc(db, "date_courses", courseId);
@@ -225,6 +249,12 @@ function ArchiveContent() {
         read_me: currentUser === 'me',
         read_minji: currentUser === 'minji'
       });
+      await notifyPartner(currentUser, {
+        title: `😢 ${subjectOf(currentUser)} 데이트 일정을 취소했어요`,
+        body: `「${title}」`,
+        url: '/archive?tab=cancel',
+        tag: `course-${courseId}`,
+      });
       alert("데이트 코스가 '승인 취소' 상태로 전환되었습니다.");
       setSelectedCourse(null);
       fetchCourses();
@@ -234,23 +264,40 @@ function ArchiveContent() {
     }
   };
 
-  const handleRejectCourse = async (courseId: string) => {
-    if (!confirm("이 데이트 코스를 반려하시겠습니까?\n반려 시 '승인 취소' 상태로 보관됩니다.")) return;
+  const openRejectModal = (course: CourseItem) => {
+    setRejectTarget(course);
+    setRejectReason('');
+  };
 
+  const handleRejectCourse = async () => {
+    if (!rejectTarget) return;
+    setIsSubmitting(true);
+    const reason = rejectReason.trim();
     try {
-      const courseRef = doc(db, "date_courses", courseId);
+      const courseRef = doc(db, "date_courses", rejectTarget.id);
       await updateDoc(courseRef, {
         status: 'canceled',
         updatedAt: new Date(),
+        reviewComment: reason,
+        reviewedBy: currentUser,
         read_me: currentUser === 'me',
         read_minji: currentUser === 'minji'
       });
-      alert("✕ 코스 반려 처리가 완료되었습니다.");
+      await notifyPartner(currentUser, {
+        title: `📝 ${subjectOf(currentUser)} 코스에 수정 의견을 남겼어요`,
+        body: reason ? `「${rejectTarget.title}」 ${reason}` : `「${rejectTarget.title}」 코스를 다시 확인해 주세요`,
+        url: '/archive?tab=cancel',
+        tag: `course-${rejectTarget.id}`,
+      });
+      alert("반려 처리했어요. 상대방에게 의견이 전달됩니다.");
+      setRejectTarget(null);
       setSelectedCourse(null);
       fetchCourses();
     } catch (err) {
       console.error("코스 반려 에러:", err);
       alert("반려 처리에 실패했습니다.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -281,6 +328,13 @@ function ArchiveContent() {
         updatedAt: new Date(),
         read_me: currentUser === 'me',
         read_minji: currentUser === 'minji'
+      });
+      const title = courses.find((c) => c.id === courseId)?.title || '데이트 코스';
+      await notifyPartner(currentUser, {
+        title: `💌 ${subjectOf(currentUser)} 데이트 코스 검토를 요청했어요`,
+        body: `「${title}」`,
+        url: '/archive?tab=waiting',
+        tag: `course-${courseId}`,
       });
       alert("작성 완료! 상대방 결재 대기 공간으로 전송되었습니다.");
       setSelectedCourse(null);
@@ -324,7 +378,7 @@ function ArchiveContent() {
   return (
     <main className="min-h-screen bg-stone-50 pb-12 pt-[140px] relative">
       
-      <header className="fixed top-0 left-0 w-full z-30 pointer-events-none">
+      <header className="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-md z-30 pointer-events-none">
         <div className="bg-white/95 backdrop-blur-md shadow-sm rounded-b-[24px] overflow-hidden pointer-events-auto pb-4">
           <div className="pt-14 px-5 flex items-center justify-between pb-3">
             <button 
@@ -378,7 +432,7 @@ function ArchiveContent() {
           </div>
         ) : (
           filteredCourses.map((course) => {
-            const isUnread = (course.status === 'pending' || course.status === 'approved') && 
+            const isUnread = (course.status === 'pending' || course.status === 'approved' || course.status === 'canceled') && 
                              (currentUser === 'minji' ? !course.read_minji : !course.read_me);
 
             return (
@@ -491,6 +545,14 @@ function ArchiveContent() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {selectedCourse.status === 'canceled' && selectedCourse.reviewComment && (
+                <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4">
+                  <p className="text-[11px] font-bold text-rose-500 mb-1">
+                    📝 {displayNameMap[selectedCourse.reviewedBy || ''] || '상대방'}의 의견
+                  </p>
+                  <p className="text-xs text-stone-700 font-medium whitespace-pre-wrap leading-relaxed">{selectedCourse.reviewComment}</p>
+                </div>
+              )}
               {selectedCourse.places.map((place, index) => (
                 <div key={place.id} className="relative pb-2">
                   {index < selectedCourse.places.length - 1 && (
@@ -589,10 +651,10 @@ function ArchiveContent() {
                   <div className="w-full flex gap-2">
                     <button
                       type="button"
-                      onClick={() => handleRejectCourse(selectedCourse.id)}
+                      onClick={() => openRejectModal(selectedCourse)}
                       className="flex-1 py-3.5 bg-red-50 text-red-600 border border-red-100 font-bold rounded-xl text-xs active:bg-red-100 transition"
                     >
-                      거 절
+                      반려 (수정 요청)
                     </button>
                     <button
                       type="button"
@@ -658,6 +720,16 @@ function ArchiveContent() {
                 </>
               )}
               
+              {selectedCourse.status === 'canceled' && selectedCourse.authorName === currentUser && (
+                <button
+                  type="button"
+                  onClick={() => router.push(`/course/write?id=${selectedCourse.id}`)}
+                  className="w-full py-4 bg-orange-500 text-white font-bold rounded-2xl text-xs shadow-md shadow-orange-500/10 active:bg-orange-600 transition"
+                >
+                  수정해서 다시 요청하기
+                </button>
+              )}
+
               {selectedCourse.status === 'canceled' && (
                 <div className="w-full">
                     <button
@@ -669,6 +741,45 @@ function ArchiveContent() {
                     </button>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {rejectTarget && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-xs z-[60] flex items-center justify-center p-6">
+          <div className="w-full max-w-sm bg-white rounded-[28px] p-6 shadow-2xl animate-fade-in flex flex-col gap-4">
+            <div className="text-center">
+              <h3 className="font-bold text-stone-900 text-base tracking-tight">코스 반려하기</h3>
+              <p className="text-xs text-stone-400 mt-1 font-medium">
+                어떤 점을 바꾸면 좋을지 남겨주면 {displayNameMap[rejectTarget.authorName] || '상대방'}에게 알림으로 전달돼요.
+              </p>
+            </div>
+            <textarea
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              maxLength={150}
+              rows={4}
+              placeholder="예) 두 번째 카페 말고 디저트 맛집 가고 싶어 🍰"
+              className="w-full bg-stone-50 border border-stone-200 rounded-2xl px-4 py-3 outline-none text-sm text-stone-800 resize-none focus:ring-2 focus:ring-rose-100 focus:bg-white focus:border-rose-300 transition-all"
+            />
+            <div className="flex gap-3">
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={() => setRejectTarget(null)}
+                className="flex-1 py-3.5 bg-stone-100 text-stone-500 font-bold rounded-xl text-xs active:bg-stone-200 transition"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={handleRejectCourse}
+                className="flex-[2] py-3.5 bg-rose-500 text-white font-bold rounded-xl text-xs shadow-md shadow-rose-500/10 active:bg-rose-600 transition disabled:opacity-50"
+              >
+                {isSubmitting ? "처리 중..." : "반려하고 의견 보내기"}
+              </button>
             </div>
           </div>
         </div>
@@ -730,4 +841,4 @@ export default function ArchivePage() {
       <ArchiveContent />
     </Suspense>
   );
-}
+}

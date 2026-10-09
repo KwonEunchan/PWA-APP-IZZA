@@ -247,7 +247,7 @@ export default function MemoryPage() {
     <main className={`min-h-screen bg-stone-50 pb-16 overflow-x-hidden relative transition-all duration-300 ${mainPaddingTop}`}>
       
       {/* 상단 고정 헤더 바 (조회 필터 통합) */}
-      <header className="fixed top-0 left-0 w-full z-30 pointer-events-none">
+      <header className="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-md z-30 pointer-events-none">
         <div className="bg-white/95 backdrop-blur-md pb-4 z-20 rounded-b-[24px] shadow-sm pointer-events-auto transition-all duration-300">
           <div className="pt-14 px-4 flex items-center justify-between pb-2">
             <button onClick={() => router.back()} className="p-2 hover:bg-stone-50 rounded-xl transition text-stone-500">
@@ -566,4 +566,4 @@ export default function MemoryPage() {
       )}
     </main>
   );
-}
+}

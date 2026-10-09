@@ -56,14 +56,15 @@ export async function POST(request: Request) {
 \`\`\`
 `;
 
-    // 💡 툴 설정을 any로 캐스팅하여 TypeScript 빌드 에러를 방지합니다.
+    // 구글 검색 그라운딩은 config.tools 로 넘겨야 실제로 적용됩니다.
+    // (예전 코드는 두 번째 인자로 넘겨서 검색 없이 응답이 생성되고 있었음)
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       contents: prompt,
-      // @ts-ignore: 타입 라이브러리의 tools 속성 인식 문제 우회
-    } as any, { 
-      tools: [{ googleSearch: {} }] 
-    } as any);
+      config: {
+        tools: [{ googleSearch: {} }],
+      },
+    });
 
     const responseText = response.text;
     console.log("📥 [Gemini 응답 수신]:", responseText);
@@ -72,17 +73,20 @@ export async function POST(request: Request) {
       throw new Error("Gemini에서 빈 응답이 반환되었습니다.");
     }
 
-    let cleanedText = responseText;
-    if (cleanedText.includes("```")) {
-      cleanedText = cleanedText.replace(/```json/g, "").replace(/```/g, "").trim();
-    }
+    let cleanedText = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
+    // 검색 그라운딩 시 JSON 앞뒤에 설명이 붙는 경우가 있어 { ... } 부분만 잘라냅니다.
+    const start = cleanedText.indexOf("{");
+    const end = cleanedText.lastIndexOf("}");
+    if (start !== -1 && end > start) cleanedText = cleanedText.slice(start, end + 1);
 
     let data;
     try {
       data = JSON.parse(cleanedText);
     } catch (parseError) {
       console.error("❌ [Error] AI 응답 JSON 최종 파싱 실패:", parseError);
-      data = { recommendation: "AI 연동이 원활하지 않습니다." };
+      // JSON 형식이 아니어도 문장 자체는 쓸 만하면 그대로 보여줍니다.
+      const plain = responseText.replace(/```(json)?/g, "").trim();
+      data = { recommendation: plain && plain.length < 400 ? plain : "AI 연동이 원활하지 않습니다." };
     }
 
     return NextResponse.json(data);
@@ -94,4 +98,4 @@ export async function POST(request: Request) {
       { status: 200 }
     );
   }
-}
+}

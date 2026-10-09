@@ -3,7 +3,23 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { db } from '../../lib/firebase';
-import { collection, addDoc, getDocs, query, orderBy, limit, where, deleteDoc, doc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, where, deleteDoc, doc } from 'firebase/firestore';
+
+// 카카오 SDK 는 afterInteractive 로 늦게 로드되므로, 준비될 때까지 잠깐 기다립니다.
+const waitForKakao = (timeoutMs = 8000): Promise<any> =>
+  new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = () => {
+      const { kakao } = window as any;
+      if (kakao?.maps?.load) {
+        kakao.maps.load(() => resolve(kakao));
+        return;
+      }
+      if (Date.now() - started > timeoutMs) { reject(new Error('카카오 지도 SDK 로드 실패')); return; }
+      setTimeout(tick, 150);
+    };
+    tick();
+  });
 
 type SearchHistoryItem = {
   id: string;
@@ -63,16 +79,16 @@ export default function SearchPlacePage() {
   const fetchSearchHistory = async () => {
     if (!currentUser) return;
     try {
-      const q = query(
-        collection(db, "search_history"),
-        where("user", "==", currentUser),
-        orderBy("clickedAt", "desc"),
-        limit(10)
-      );
+      // where + orderBy 조합은 Firestore 복합 색인이 필요해서, 정렬은 클라이언트에서 합니다.
+      const q = query(collection(db, "search_history"), where("user", "==", currentUser));
       const querySnapshot = await getDocs(q);
       const historyList: SearchHistoryItem[] = [];
-      
-      querySnapshot.forEach((doc) => {
+      const toMs = (v: any) => (v && typeof v.toMillis === 'function' ? v.toMillis() : 0);
+      const sortedDocs = [...querySnapshot.docs]
+        .sort((a, b) => toMs(b.data().clickedAt) - toMs(a.data().clickedAt))
+        .slice(0, 10);
+
+      sortedDocs.forEach((doc) => {
         const data = doc.data();
         let displayDate = data.searchDate || "";
         if (displayDate.includes("-")) {
@@ -172,7 +188,11 @@ export default function SearchPlacePage() {
     const { title, address, lat, lng, placeUrl } = selectedTarget;
     setIsSheetOpen(false);
     setSelectedTarget(null);
-    router.push(`/course/write?name=${encodeURIComponent(title)}&address=${encodeURIComponent(address)}&lat=${lat}&lng=${lng}&url=${encodeURIComponent(placeUrl)}`);
+    // 기존 코스를 수정하던 중이면 그 코스로 돌아가야 하므로 id 를 함께 넘깁니다.
+    let editingId = '';
+    try { editingId = JSON.parse(localStorage.getItem('course_draft') || '{}').courseId || ''; } catch { /* 무시 */ }
+    const idParam = editingId ? `&id=${encodeURIComponent(editingId)}` : '';
+    router.push(`/course/write?name=${encodeURIComponent(title)}&address=${encodeURIComponent(address)}&lat=${lat}&lng=${lng}&url=${encodeURIComponent(placeUrl)}${idParam}`);
   };
 
   const fetchKakaoPlaces = (query: string) => {
@@ -181,9 +201,7 @@ export default function SearchPlacePage() {
       setIsSearching(false);
       return;
     }
-    const { kakao } = window as any;
-    if (!kakao || !kakao.maps) return;
-    kakao.maps.load(() => {
+    waitForKakao().then((kakao) => {
       if (!kakao.maps.services) return;
       const ps = new kakao.maps.services.Places();
       ps.keywordSearch(query, (data: any, status: any) => {
@@ -193,9 +211,11 @@ export default function SearchPlacePage() {
         } else if (status === kakao.maps.services.Status.ZERO_RESULT) {
           setSearchResults([]);
           setIsSearching(true);
+        } else {
+          console.error('카카오 장소 검색 오류:', status);
         }
       });
-    });
+    }).catch((e) => console.error(e));
   };
 
   useEffect(() => {
@@ -304,4 +324,4 @@ export default function SearchPlacePage() {
       )}
     </main>
   );
-}
+}
